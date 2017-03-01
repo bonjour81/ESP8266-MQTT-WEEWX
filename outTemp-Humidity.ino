@@ -1,6 +1,9 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
+// Important information : to get out of deepsleep, it is needed that GPIO16 (RTC output) is connected to RESET pin of the ESP8266
+// GPIO16 is connected is D2 on my Wemos D1 R1, but it may be D0 on some others.
+
 // WiFi connexion informations
 const char* ssid = "your hotspot ssid";
 const char* password = "your wifi password";
