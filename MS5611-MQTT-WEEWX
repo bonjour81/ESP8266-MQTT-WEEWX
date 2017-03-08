@@ -1,10 +1,12 @@
 #!/usr/bin/python
 # Distributed with a free-will license.
 # Use it any way you want, profit or free, provided it fits in the licenses of its associated works.
-# MS5611_01BXXX
+#
+# All the sensor related part comes from https://github.com/ControlEverythingCommunity/MS5611-01BXXX
 # This code is designed to work with the MS5611_01BXXX_I2CS I2C Mini Module available from ControlEverything.com.
-# https://www.controleverything.com/content/Analog-Digital-Converters?sku=MS5611-01BXXX_I2CS_A01#tabs-0-product_tabset-2
-
+#
+# MQTT part is inspired from simple python mqtt examples
+#
 import smbus
 import time
 import paho.mqtt.client as mqtt
