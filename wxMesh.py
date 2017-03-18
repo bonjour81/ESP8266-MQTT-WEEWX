@@ -77,8 +77,9 @@ class wxMesh(weewx.drivers.AbstractDevice):
         self.host = stn_dict.get('host', 'localhost')
         # subscribe to all sub-topic of the topic define in weewx.conf 
         self.topic = stn_dict.get('topic', 'weather') + "/#"
-	self.username = stn_dict.get('username', 'XXX')
+	self.username = stn_dict.get('username', 'default_usernameXXX')
         self.password = stn_dict.get('password', 'password')
+	self.clientid = stn_dict.get('client', 'weewx_mqttc')
         # how often to poll the weather data file, seconds
         self.poll_interval = float(stn_dict.get('poll_interval', 5.0))
         # mapping from variable names to weewx names
@@ -88,11 +89,10 @@ class wxMesh(weewx.drivers.AbstractDevice):
         loginf("topic is %s" % self.topic)
         loginf("polling interval is %s" % self.poll_interval)
         loginf('label map is %s' % self.label_map)
-        
         self.payload = "Empty"
 	self.receive_buffer = {}
         #self.payloadList = [payload]
-        self.client = mqtt.Client(client_id="XXX", protocol=mqtt.MQTTv31)
+        self.client = mqtt.Client(client_id=self.clientid, protocol=mqtt.MQTTv31)
 
 	#self.client.on_connect = self.on_connect
 	self.client.on_message = self.on_message
@@ -107,24 +107,30 @@ class wxMesh(weewx.drivers.AbstractDevice):
 	string_topic = str(msg.topic)
 	key =  string_topic.split('/')[-1] 
         self.receive_buffer[key] = str(msg.payload)
+        logdbg("mqtt message received %s" %string_topic)
+        logdbg("mqtt message payload %s" %self.payload)
+
 
     def closePort(self):
+	self.client.loop_stop()
         self.client.disconnect()
 
     def genLoopPackets(self):
         self.client.loop_start()   # enable to receive ('on_message') in background
         while True:
             time.sleep(self.poll_interval) # wait for some MQTT data to be published
-            data = self.receive_buffer
+            data = self.receive_buffer.copy()
+            self.receive_buffer.clear()
             if data:       # if data is not empty then prepare loop packet
+		logdbg("data !!!! %s" % data)
                 _packet = {'dateTime': int(time.time() + 0.5),'usUnits': weewx.METRIC}
                 logdbg("dateTime %s" % _packet["dateTime"])
                 for vname in data:
                     _packet[self.label_map.get(vname, vname)] = _get_as_float(data, vname)
-                    logdbg("buffer content for key: %s =  %s" %(vname, data[vname]))
+                    logdbg("packet content: %s =  %s" %(self.label_map.get(vname, vname), data[vname]))
                 yield _packet
-                self.receive_buffer.clear()
                 data.clear()
+#	self.client.loop_stop()
 
     @property
     def hardware_name(self):
