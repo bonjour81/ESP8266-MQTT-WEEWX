@@ -107,9 +107,6 @@ class wxMesh(weewx.drivers.AbstractDevice):
 	string_topic = str(msg.topic)
 	key =  string_topic.split('/')[-1] 
         self.receive_buffer[key] = str(msg.payload)
-        logdbg("mqtt message received %s" %string_topic)
-        logdbg("mqtt message payload %s" %self.payload)
-
 
     def closePort(self):
 	self.client.loop_stop()
@@ -122,7 +119,6 @@ class wxMesh(weewx.drivers.AbstractDevice):
             data = self.receive_buffer.copy()
             self.receive_buffer.clear()
             if data:       # if data is not empty then prepare loop packet
-		logdbg("data !!!! %s" % data)
                 _packet = {'dateTime': int(time.time() + 0.5),'usUnits': weewx.METRIC}
                 logdbg("dateTime %s" % _packet["dateTime"])
                 for vname in data:
