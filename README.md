@@ -1,6 +1,6 @@
 # ESP8266-MQTT-WEEWX
 
-Check wifi for more details !
+# Check WIKI for more details !
 
 ESP8266 code for WEEWX MQTT sensors
 
