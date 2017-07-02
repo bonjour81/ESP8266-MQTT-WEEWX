@@ -1,100 +1,271 @@
+
 #include <ESP8266WiFi.h>
-#include <PubSubClient.h>
+#include <ClosedCube_HDC1080.h>
+#include <Adafruit_SI1145.h>
+#include "Adafruit_MQTT.h"
+#include "Adafruit_MQTT_Client.h"
+#include "PCF8583.h"
+#include <Adafruit_INA219.h>
 
-// Important information : to get out of deepsleep, it is needed that GPIO16 (RTC output) is connected to RESET pin of the ESP8266
-// GPIO16 is connected is D2 on my Wemos D1 R1, but it may be D0 on some others.
 
-// WiFi connexion informations
-const char* ssid = "your hotspot ssid";
-const char* password = "your wifi password";
-IPAddress ip(192, 168, 1, xx);      // set xx to the expected IP address
-IPAddress gateway(192, 168, 1, xx); // set gateway to match your network
+#include "passwords.h"   // credentials for wifi & mqtt are in a separate file, see password.h for format.
+
+// I2C Setup    SCL: D1/GPIO5    SDA: D2/GPIO4  /////////////////////////////////////////////
+PCF8583 rtc(0xA0);   // counter for rain gauge tipping bucket   address 0xA0
+// PCF8583 memory mapping:
+// @ 0x10  =  humidity status:  2: >=95%    1: between 5 & 95%    0:below 5%
+// @ 0x11  = Invalid Temp counter, if heater was used, as long as counter > 0, do not use sensor T value.
+// @ 0x12 / 13 / 14 / 15  : store last good temp value.
+
+// INA219 current and voltage sensors: to monitor solar panel & battery
+Adafruit_INA219 ina219_solar(0x44);   // I2C address 0x44   !default is 0x40, conflict with hdc1080
+Adafruit_INA219 ina219_battery(0x45); // I2C address 0x45 !default is 0x40, conflict with hdc1080
+float solar_voltage = 0;
+float solar_current = 0;  // to check if battery is charging well.
+float battery_voltage = 0;
+// float battery_current = 0 // not really interesting because discharge current depends when we measure it (during wifi etc..)
+
+
+ClosedCube_HDC1080 hdc1080;   // default address is 0x40 , outside temp & humidity sensor, very high accuracy
+
+Adafruit_SI1145 uv = Adafruit_SI1145();  // default address is 0x60  UV sensor
+
+// WiFi connexion informations //////////////////////////////////////////////////////////////
+
+const char* espname = "ESP_THrain";
+IPAddress ip(192, 168, 1, 191);
+IPAddress gateway(192, 168, 1, 254); // set gateway to match your network
 IPAddress subnet(255, 255, 255, 0); // set subnet mask to match your network
 
-// MQTT server informations
-#define mqtt_server "<mosquitto_broker_ip>"
-#define mqtt_user "<mqtt_username>"  //s'il a été configuré sur Mosquitto
-#define mqtt_password "<mqtt_password>" //idem
-#define temperature_topic "weewx/outTemp"  //Topic température
-#define humidity_topic "weewx/outHumidity"        //Topic humidité
+// MQTT server informations /////////////////////////////////////////////////////////////////
+
+// Create an ESP8266 WiFiClient class to connect to the MQTT server.
+WiFiClient client;
+// Setup the MQTT client class by passing in the WiFi client and MQTT server and login details.
+Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
+Adafruit_MQTT_Publish rain_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/rain", 0);
+Adafruit_MQTT_Publish outTemp_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/outTemp", 0);
+Adafruit_MQTT_Publish outHumidity_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/outHumidity", 0);
+Adafruit_MQTT_Publish UV_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/UV", 0);
+Adafruit_MQTT_Publish Vsolar_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/Vsolar", 0);
+Adafruit_MQTT_Publish Isolar_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/Isolar", 0);
+Adafruit_MQTT_Publish Vbat_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/Vbat", 0);
 
 
-// Time to sleep (in seconds):
-const int sleepTimeS = 60;
-// set true to get more information on serial
-bool debug = true;
 
-WiFiClient espClient;
-PubSubClient client(espClient);
+
+// other variables ////////////////////////////////////////////////////////////////////////
+float rain = 0;
+float temp;
+float humi;
+union {
+  float f;
+  uint8_t b[4];
+} last_temp;
+
+float UVindex = -1;
+
+const int sleep_duration = 300;  // deep sleep duration in seconds
+const uint8_t invalid_temp_counter_init = 5; // should be 15min / sleep duration : used to disable Temp measurement after heater use.  Temp will be disable n * sleep duration, 15 min is recommanded
+uint8_t invalid_temp_counter;
+
+// uint8_t rtc_mode;
+
+uint8_t test;
 
 void setup() {
-  Serial.begin(115200);     // not necessary, only for debug
-  setup_wifi();             // Connexion to wifi
-  client.setServer(mqtt_server, 1883);    // mqtt server config
-  while (!client.connected()) {     // make sure to reconnect to mqtt
-    reconnect();
+  //Serial.begin(115200);
+  //Serial.println(' ');
+  //Serial.println("Boot");
+  //delay(5000);
+
+  // check if POR occured ( @POR, register 0x00 of PCF8583 is set to 0 )
+  if ( rtc.getRegister(0) == 0 ) {
+    // POR occured, let's clear the SRAM of PCF8583
+    for (uint8_t i = 0x10; i < 0x20; i++) { // PCF8583 SRAM start @0x10 to 0xFF, let's clear a few bytes only.
+      rtc.setRegister(i, 0);
+    }
+    rtc.setMode(MODE_EVENT_COUNTER);
+    rtc.setCount(0);
+    //Serial.println("Power ON RESET !");
   }
-  client.loop();
-  // read humidity -> currently set to dummy value while waiting for the sensor
-  float h = random(70,77);             
-  //read temp -> currently set to dummy value while waiting for the sensor
-  float t = random(17,20);  
-  if ( debug ) {
-     Serial.print("Temperature : ");
-     Serial.print(t);
-     Serial.print(" | Humidite : ");
-     Serial.println(h);
-     delay(10000);
-   }  
 
-   // publish the measured values on mqtt
-   client.publish(temperature_topic, String(t).c_str());    //Publie la température sur le topic temperature_topic
-   client.publish(humidity_topic, String(h).c_str());      //Et l'humidité
-   if (debug) {
-   Serial.println("closing connection, ESP8266 goes in deepsleep mode");
-   }
-   Serial.end();
-   delay(1000);
-   ESP.deepSleep(sleepTimeS * 1000000);
+  ina219_solar.begin();
+  ina219_battery.begin();
+
+  hdc1080.begin(0x40);
+
+  if (! uv.begin()) {
+    //Serial.println("Didn't find Si1145");
+  } 
+  
+  else {
+    delay(5);
+    UVindex = uv.readUV();
+    UVindex /= 100.0;
+    //Serial.print("UV: ");  Serial.println(UVindex);
+    //   Serial.print("Vis: "); Serial.println(uv.readVisible());
+    //   Serial.print("IR: "); Serial.println(uv.readIR());
+  }
+
+
+
+  // read sensors
+  rain = 0.2 * float(rtc.getCount());
+  //Serial.print("pluie = "); Serial.print(rain); Serial.println("mm");
+  rtc.setCount(0);
+  temp = hdc1080.readTemperature();
+  humi = hdc1080.readHumidity();
+
+  solar_voltage = ina219_solar.getBusVoltage_V();
+  solar_current = ina219_solar.getCurrent_mA();;
+  battery_voltage = ina219_battery.getBusVoltage_V();;
+
+
+  //Serial.print("T="); Serial.print(temp); Serial.println("°C");
+  //Serial.print("H="); Serial.print(humi); Serial.println("%");
+  //Serial.print("Vsolar="); Serial.print(solar_voltage); Serial.println("V");
+  //Serial.print("Isolar="); Serial.print(solar_current); Serial.println("mA");
+  //Serial.print("Vbat="); Serial.print(battery_voltage); Serial.println("V");
+  
+
+
+  // read last temp stored in SRAM
+  last_temp.b[0] = rtc.getRegister(0x12);
+  last_temp.b[1] = rtc.getRegister(0x13);
+  last_temp.b[2] = rtc.getRegister(0x14);
+  last_temp.b[3] = rtc.getRegister(0x15);
+  //Serial.print("just read from SRAM last_temp=");Serial.println(last_temp.f);
+
+
+  if (humi >= 95) {
+    rtc.setRegister(0x10, 2);
+    //   Serial.println("humi>=95");
+  }
+  else if (humi > 5 & humi < 95) {
+    rtc.setRegister(0x10, 1);
+    //   Serial.println("5%<humi<95%");
+
+  }
+  else  {  //(humi <= 0)
+    // let's check if previous value was higher than 95%
+    if (rtc.getRegister(0x10) == 2) {
+      // condensation occured, let's try the heater
+      //    Serial.println("heater launch!");
+      while (hdc1080.readHumidity() <= 5) {
+        hdc1080.heatUp(10);
+      }
+      //    Serial.println("heater end");
+      rtc.setRegister(0x10, 0);
+      rtc.setRegister(0x11, invalid_temp_counter_init ); // set counter for invalid T measurement
+    }
+  }
+  //Serial.print(" status humi");Serial.println(rtc.getRegister(0x10));
+  invalid_temp_counter = rtc.getRegister(0x11);
+  if (invalid_temp_counter > 0) {
+    temp = last_temp.f;
+    rtc.setRegister(0x11, invalid_temp_counter - 1 );
+  }
+  else {
+    //  Serial.println("we store temp as last_temp");
+    last_temp.f = temp;
+    rtc.setRegister(0x12, last_temp.b[0]);
+    rtc.setRegister(0x13, last_temp.b[1]);
+    rtc.setRegister(0x14, last_temp.b[2]);
+    rtc.setRegister(0x15, last_temp.b[3]);
+  }
+
+  //  Serial.print("counter invalid temp: "); Serial.println(invalid_temp_counter);
+
+  // debug messages
+  Serial.println("connecting...");
+
+  setup_wifi();
+  setup_mqtt();
+
+  if (rain > 0 )                                          { rain_pub.publish(rain); }
+  if ( humi >= 0 && humi <= 100 )                          { outHumidity_pub.publish(humi); }
+  if ((temp > -40) && (temp < 80))                         { outTemp_pub.publish(temp); }
+  if ((UVindex > 0) && (UVindex < 25))                    { UV_pub.publish(UVindex); }
+  if ((solar_voltage >= 0) && (solar_voltage < 20.0))      { Vsolar_pub.publish(solar_voltage); }
+  if ((solar_current >= 0) && (solar_current < 1000.0))    { Isolar_pub.publish(solar_current); }
+  if ((battery_voltage >= 0) && (battery_voltage < 20.0) ) { Vbat_pub.publish(battery_voltage); }
+  
+
+
+
+
+  
+
+  mqtt.disconnect();
+  delay(50);
+  WiFi.disconnect();
+  //Serial.println("Sleep");
+  delay(50);
+  ESP.deepSleep(sleep_duration * 1000000);
+
+
+}
+
+void loop() {
+  // not used due to deepsleep
 }
 
 
-void loop() { 
-
-}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// setup_wifi() : connexion to wifi hotspot
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //Connexion au réseau WiFi
 void setup_wifi() {
-  delay(10);
-  Serial.println();
-  Serial.print("Connexion a ");
-  Serial.println(ssid);
+  //Serial.println();
+  //Serial.print("Connexion a ");
+  //Serial.println(ssid);
   // config static IP
-  WiFi.config(ip, gateway, subnet);
+  //  WiFi.mode(WIFI_STA);
+  //  WiFi.config(ip, gateway, subnet);
   WiFi.begin(ssid, password);
- 
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("");
-  Serial.println("Connexion WiFi etablie ");
-  Serial.println("=> Addresse IP : ");
-  Serial.print(WiFi.localIP());
-}
 
-//Reconnexion
-void reconnect() {
-  //Boucle jusqu'à obtenur une reconnexion
-  while (!client.connected()) {
-    Serial.print("Connexion au serveur MQTT...");
-    if (client.connect("ESP8266Client", mqtt_user, mqtt_password)) {
-      Serial.println("OK");
-    } else {
-      Serial.print("KO, erreur : ");
-      Serial.print(client.state());
-      Serial.println(" On attend 5 secondes avant de recommencer");
-      delay(5000);
+  uint8_t timeout_wifi = 60;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    //Serial.print("["); Serial.print(WiFi.status()); Serial.print("]");
+    timeout_wifi--;
+    if (timeout_wifi == 0) {
+      //Serial.println("connexion timeout!"); delay(100);
+      ESP.deepSleep(20 * 1000000);  // deepsleep for 20sec, after will restart (= reset)
     }
   }
+  //Serial.println("");
+  //Serial.println("Connexion WiFi etablie ");
+  //Serial.print("=> Addresse IP : ");
+  //Serial.println(WiFi.localIP());
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//  setup_mqtt() : connexion to mosquitto server
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void setup_mqtt() {
+  int8_t ret;
+
+  // Stop if already connected.
+  if (mqtt.connected()) {
+    return;
+  }
+
+  //Serial.print("Connecting to MQTT... ");
+
+  uint8_t retries = 3;
+  while ((ret = mqtt.connect()) != 0) { // connect will return 0 for connected
+    //Serial.println(mqtt.connectErrorString(ret));
+    //Serial.println("Retrying MQTT connection in 1 seconds...");
+    mqtt.disconnect();
+    delay(1000);  // wait 1 seconds
+    retries--;
+    if (retries == 0) {
+      ESP.deepSleep(20 * 1000000);  // deepsleep for 20sec, after will restart (= reset)
+    }
+  }
+  //Serial.println("MQTT Connected!");
 }
