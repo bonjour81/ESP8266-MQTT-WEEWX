@@ -6,11 +6,11 @@
 ********************************************************************/
 
 #include <SPI.h>
+#include "TimeLib.h"
 #include "nRF24L01.h"
 #include "RF24.h"
 #include "DS3232RTC.h"
 #include "PCF8583.h"
-#include "Time.h"
 #include "Wire.h"
 #include "LowPower.h"
 
@@ -53,7 +53,8 @@ union {
   uint8_t b[2];
 } windgustdir;
 
-
+float wind_inst = 0;
+float wind_avg  = 0;
 
 uint8_t windpacket[7];
 
@@ -65,8 +66,15 @@ int     dir_sum;
 long windspeed_32ksum = 0;
 int  anemo_turns = 0;
 
-unsigned long windspeed_sum = 0;
+float         windspeed_sum = 0;
 unsigned long windspeed_index = 0;
+
+// wind moving average calculation (windspeed = 10minutes average)
+const int numReadings = 20; // 10 minutes, with 1 sample very 3s = 200
+int readIndex = 0;
+float readings[numReadings];
+float total = 0;
+float average = 0;
 
 
 bool first_edge_occured = false;
@@ -174,10 +182,13 @@ void setup(void)
     duration = pulseIn(anemoPin, HIGH, 2000000);
     Serial.println(duration);
     duration = pulseIn(anemoPin, LOW, 2000000);
-    
-  */
 
+  */
+  for (int thisReading = 0; thisReading < numReadings; thisReading++) {
+    readings[thisReading] = 0;
+  }
   winddir.i = 90; // for debug
+  windgust.f = 0;
 
   pinMode(anemoPin,  INPUT);
   attachInterrupt(digitalPinToInterrupt(anemoPin) , risingedge, RISING);
@@ -189,37 +200,40 @@ void setup(void)
 
 void loop(void) {
 
-  
+
   LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_ON, USART0_ON, TWI_ON);
   detachInterrupt(digitalPinToInterrupt(anemoPin));
-  
+
   tic = pcf8583.getCount();
-  
-  //Serial.print("wake! tic:"); Serial.println(tic);
+
   // check if we woke up before the 2s sleep   (32768 = 1sec)
-  if (( t1 == 0 ) && (t2 == 0) && (tic <= 32768)) {                 // acquisition of 1st edge of anemometer period
+  if (( t1 == 0 ) && (t2 == 0) && (tic <= 42000)) {                 // acquisition of 1st edge of anemometer period
     t1 = tic;  // record 1st edge
-    Serial.println("t1!");delay(1); 
+    //Serial.print("t1!"); Serial.println(t1); delay(1);
   }
   else {
-    if (( t1 > 0 )  && (t2 == 0) && ((tic - t1) <= 32768)) {         // acquitision of 2nd edge of anemometer period: we have now a measured period! let's transmit value.
+    if (( t1 > 0 )  && (t2 == 0) && ((tic - t1) <= 42000)) {         // acquitision of 2nd edge of anemometer period: we have now a measured period! let's transmit value.
       t2 = tic;  // record 2nd edge, we have a wind measure !
       // process the wind measurement !
-      windgust.f = 4 * 32768 / (float)(t2 - t1);
-      windpacket[0] = winddir.b[0];
-      windpacket[1] = winddir.b[1];
-      windpacket[2] = windgust.b[0];
-      windpacket[3] = windgust.b[1];
-      windpacket[4] = windgust.b[2];
-      windpacket[5] = windgust.b[3];
-      windpacket[6] = 1;
-      windspeed_sum += t2 - t1;  // add value to sum for average calculation
-      windspeed_index++;
+      wind_inst = 4 * 32768 / (float)(t2 - t1);
+      if ( wind_inst > (wind_avg + 18)) {
+        windgust.f = wind_inst;
+        windpacket[0] = winddir.b[0];
+        windpacket[1] = winddir.b[1];
+        windpacket[2] = windgust.b[0];
+        windpacket[3] = windgust.b[1];
+        windpacket[4] = windgust.b[2];
+        windpacket[5] = windgust.b[3];
+        windpacket[6] = 1;
+      }
+
+      //      windspeed_sum += windgust.f;  // add value to sum for average calculation
+      //      windspeed_index++;
       t1 = 0;
       t2 = 0;
       /*while ( pcf8583.getCount() < 85000 ) {  // wait until we reach 3s
         LowPower.idle(SLEEP_250MS, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_ON, USART0_ON, TWI_ON);
-      }*/
+        }*/
       while ( pcf8583.getCount() < 97700 ) {  // wait until we reach 3s
         LowPower.idle(SLEEP_15MS, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_ON, USART0_ON, TWI_ON);
       }
@@ -228,224 +242,63 @@ void loop(void) {
       send_packet(windpacket);
 
 
+
     }
     else {    // no wind, reinit
-      windspeed_index++;
+      //windspeed_index++;
       t1 = 0;
       t2 = 0;
-     /* while ( pcf8583.getCount() < 85000 ) {  // wait until we reach 3s
-        LowPower.idle(SLEEP_250MS, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_ON, USART0_ON, TWI_ON);
-      }*/
+      /* while ( pcf8583.getCount() < 85000 ) {  // wait until we reach 3s
+         LowPower.idle(SLEEP_250MS, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_ON, USART0_ON, TWI_ON);
+        }*/
       while ( pcf8583.getCount() < 98304 ) {  // wait until we reach 3s
         LowPower.idle(SLEEP_15MS, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_ON, USART0_ON, TWI_ON);
       }
-      pcf8583.setCount(0); delay(2);
-       //Serial.println("###########no wind!");
-
+      pcf8583.setCount(0);
     }
     RTC.read(tm);
-    Serial.print(tm.Minute, DEC); Serial.print(":"); Serial.println(tm.Second, DEC);
-    Serial.print("sum/index");Serial.print(windspeed_sum);Serial.print("/");Serial.println(windspeed_index);
+    total = total - readings[readIndex];
+    readings[readIndex] = wind_inst;
+    total = total + readings[readIndex];
+    readIndex = readIndex + 1;
+    if (readIndex >= numReadings) {
+      readIndex = 0;
+    }
+    wind_avg = total / (float)(numReadings);
+
+    Serial.print("wind_inst: "); Serial.print(wind_inst); Serial.print(" km/h ");
+    Serial.print("avge :"); Serial.print(  wind_avg ); Serial.print(" km/h "); Serial.print("index: "); Serial.print(readIndex);
+    if (windgust.f > 0) {
+      Serial.print(" gust: ");
+      Serial.print(windgust.f);
+      Serial.println(" km/h");
+    } else Serial.println("");
+    delay(3);
+    windgust.f = 0;
+
     if (tm.Minute == 1) {
-      Serial.print("10 minutes! wind =");Serial.print(   4 * 32768 / (float)(windspeed_sum/windspeed_index) );
-      windspeed_sum = 0;
-      windspeed_index = 0;
       // send the 10 minutes average packet
-     
+      // ....
 
-
+      // reinit RTC
       RTC.write(tm0);
     }
   }
-   //Serial.print("sleep!");Serial.println(pcf8583.getCount());delay(5);
-  /*
-    if  (( t1 == 0 ) && (t2 == 0)) {
-    //  pcf8583.setCount(0); delay(2);
-    }*/
-  attachInterrupt(digitalPinToInterrupt(anemoPin) , risingedge, RISING);delay(1);
+  attachInterrupt(digitalPinToInterrupt(anemoPin) , risingedge, RISING); delay(1);
 }
 
 
 
 
-/*
-
-
-  //detachInterrupt(digitalPinToInterrupt(anemoPin));
-  noInterrupts();
-  delay(5);
-  Serial.print("wake up!"); //Serial.println(millis());
-
-
-  if ( (t1 > 0) && (t2 > 0) && (t2 > t1) ) {
-  windspeed.f = 4000 / (float)(t2 - t1);
-  Serial.print("t1:"); Serial.print(t1); Serial.print(" t2:"); Serial.print(t2); Serial.print(" t2-t1:"); Serial.print(t2 - t1); Serial.print(" speed:"); Serial.println(windspeed.f); delay(10);
-  t1 = 0;
-  t2 = 0;
-
-
-  // .... emission
-  }
-  else {
-  if ( (t1 == 0) && (t2 == 0) ) {
-    // no wind detected
-    Serial.println("no wind - deep sleep8s"); delay(10);
-    //     LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
-    //detachInterrupt(digitalPinToInterrupt(anemoPin));
-
-
-    // .....  emission wind = 0 ? (check alive sensor) every 10-30 sec?
-    delay(8000);
-  }
-
-  }
-  Serial.println("Powerdown 2s");
-  delay(10);
-  //LowPower.idle(SLEEP_4S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_ON, USART0_ON, TWI_ON);
-  delay(10);
-  Serial.println("restart");
-  attachInterrupt(digitalPinToInterrupt(anemoPin) , risingedge, RISING);
-
-  /*
-  Serial.println("debug");
-
-    while (digitalRead(anemoPin) == LOW) {}
-    Serial.println(millis());
-    while (digitalRead(anemoPin) == HIGH) {}
-    Serial.println(millis());
-    while (digitalRead(anemoPin) == LOW) {}
-    Serial.println(millis());
-    while (digitalRead(anemoPin) == HIGH) {}
-    Serial.println(millis());
-*/
-
-
-
-/*
-  // Serial.println("enter sleep");
-  // delay(100);
-  LowPower.idle(SLEEP_8S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
-
-  // delay(20);
-  Serial.print("windspeed_32ksum=");Serial.print(windspeed_32ksum);Serial.print("  anemo_turns=");Serial.println(anemo_turns);
-
-
-  // LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-  setSyncProvider(RTC.get);
-  //Serial.print("s="); Serial.print(second()); Serial.print(" IT:"); Serial.println(IT);
-
-  if (IT == true) {
-    if (first_edge_occured == false) {
-      pcf8583.setCount(0);
-      first_edge_occured = true;
-    }
-    else {
-      windspeed_32ksum = pcf8583.getCount();
-      anemo_turns ++ ;
-    }
-
-    IT = false;
-    attachInterrupt(digitalPinToInterrupt(anemoPin) , anemometerIT, RISING);
-  }
-  else   {  //  IT == false)
-    detachInterrupt(digitalPinToInterrupt(anemoPin));
-    windspeed_32ksum = 0;
-    anemo_turns = 0;
-    Serial.println("8 sec wakeup!");delay(10);
-
-  }
-
-
-
-  if ( (second() % period == 0) && (task3sec == false) ) { // every 3seconds
-    detachInterrupt(digitalPinToInterrupt(anemoPin));
-    Serial.print(period);Serial.println("sec task");
-    if (windspeed_32ksum > 0) {
-      windspeed.f =  (4 * anemo_turns * 32768) / windspeed_32ksum ; // if we have seen 32768 counts (1sec) in RTC, in 10 ITs, anemo turns at 10Hz :  4*10*32768 / 32768 = 40km/h
-    }
-    else {
-      windspeed.f = 0;
-    }
-    Serial.print("speed:");Serial.println(windspeed.f);delay(10);
-    windspeed_32ksum = 0;
-    anemo_turns = 0;
-    first_edge_occured = false;
-    task3sec = true;
-
-  }
-  if ( (second() % period) > 0) {
-    task3sec = false;
-  }
-
-  // Serial.print("windspeed:"); Serial.println(windspeed.f);
-
-  //attachInterrupt(digitalPinToInterrupt(anemoPin) , anemometerIT, RISING);
-
-
-  /*
-
-    if (windspeed_32ksum > 0) {
-               windspeed.f =  (4 * anemo_turns * 32768) / windspeed_32ksum ; // if we have seen 32768 counts (1sec) in RTC, in 10 ITs, anemo turns at 10Hz :  4*10*32768 / 32768 = 40km/h
-             }
-            Serial.print("B");
-            send_packet();
-            state_machine_second++;
-            windspeed_32ksum = 0;
-            anemo_turns = 0;
-            Serial.print("C");
-            first_edge_occured = false;
-            attachInterrupt(digitalPinToInterrupt(anemoPin) , anemometerIT, RISING);
-
-
-
-
-        switch (state_machine_second) {
-          case 0: {       // 1sec of 3sec cycle: emission of measured data. clear measurements etc...
-            detachInterrupt(digitalPinToInterrupt(anemoPin));  // to disable any further measurement of anemometer while processing and sending data.
-            Serial.print("A");
-
-          } break;
-          case 1: { // 2sec of 3sec cycle.
-            state_machine_second++;
-          } break;
-          case 2: { // 3sec of 3sec cycle,
-            state_machine_second = 0;
-          } break;
-        }  // end switch case state_machine_second
-    IT = 0;
-    attachInterrupt(digitalPinToInterrupt(wakeUpPin), wakeUp, RISING);
-    } break;
-    } // end switch case IT
-
-    Serial.print("speed:"); Serial.println(windspeed.f);
-    Serial.print("state_machine_second"); Serial.println(state_machine_second);
-    delay(250);
-
-    // LowPower.idle(SLEEP_FOREVER, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
-    //  LowPower.idle(SLEEP_FOREVER, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_ON, TWI_ON);
-    //detachInterrupt(digitalPinToInterrupt(wakeUpPin));
-    //delay(1000);*/
 
 
 
 
 void send_packet(uint8_t packet[7]) {
-
   radio.powerUp();
   delay(10);
-  /* windpacket[0] = winddir.b[0];
-    windpacket[1] = winddir.b[1];
-    windpacket[2] = windspeed.b[0];
-    windpacket[3] = windspeed.b[1];
-    windpacket[4] = windspeed.b[2];
-    windpacket[5] = windspeed.b[3];*/
-  //Serial.print("J'envoie maintenant ");
-  //Serial.print(winddir.i); Serial.print("-"); Serial.print(windgust.f); Serial.print("!");
-  //Serial.println(radio.write(packet, 7));
   radio.write(packet, 7);
   delay(10);
   radio.powerDown();
-
 }
-
 
