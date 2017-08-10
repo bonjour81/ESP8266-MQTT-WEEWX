@@ -24,4 +24,7 @@ This driver handle the MQTT topics following this format:
   weewx/rain  
   
   ....
+    
   
+  
+[Discussion thread is here](https://groups.google.com/forum/m/#!search/mqtt$20bill/weewx-development/tNDnGNe9Z_M)
