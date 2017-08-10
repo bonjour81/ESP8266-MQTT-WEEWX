@@ -27,4 +27,4 @@ This driver handle the MQTT topics following this format:
     
   
   
-[Discussion thread is here](https://groups.google.com/forum/m/#!search/mqtt$20bill/weewx-development/tNDnGNe9Z_M)
+[Discussion thread is here](https://groups.google.com/d/msg/weewx-development/tNDnGNe9Z_M/ubAAPKGBCAAJ)
