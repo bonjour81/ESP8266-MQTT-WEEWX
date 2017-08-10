@@ -8,7 +8,7 @@
 #include <Adafruit_INA219.h>
 
 
-#include "passwords.h"   // credentials for wifi & mqtt are in a separate file, see password.h for format.
+#include "passwords.h"
 
 // I2C Setup    SCL: D1/GPIO5    SDA: D2/GPIO4  /////////////////////////////////////////////
 PCF8583 rtc(0xA0);   // counter for rain gauge tipping bucket   address 0xA0
@@ -26,14 +26,14 @@ float battery_voltage = 0;
 // float battery_current = 0 // not really interesting because discharge current depends when we measure it (during wifi etc..)
 
 
-ClosedCube_HDC1080 hdc1080;   // default address is 0x40 , outside temp & humidity sensor, very high accuracy
+ClosedCube_HDC1080 hdc1080;   // default address is 0x40
 
-Adafruit_SI1145 uv = Adafruit_SI1145();  // default address is 0x60  UV sensor
+Adafruit_SI1145 uv = Adafruit_SI1145();  // default address is 0x60
 
 // WiFi connexion informations //////////////////////////////////////////////////////////////
 
 const char* espname = "ESP_THrain";
-IPAddress ip(192, 168, 1, 191);
+IPAddress ip(192, 168, 1, 191);      // it will be the sensor IP, to be checked with your DHCP.
 IPAddress gateway(192, 168, 1, 254); // set gateway to match your network
 IPAddress subnet(255, 255, 255, 0); // set subnet mask to match your network
 
@@ -43,13 +43,13 @@ IPAddress subnet(255, 255, 255, 0); // set subnet mask to match your network
 WiFiClient client;
 // Setup the MQTT client class by passing in the WiFi client and MQTT server and login details.
 Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
-Adafruit_MQTT_Publish rain_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/rain", 0);
-Adafruit_MQTT_Publish outTemp_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/outTemp", 0);
-Adafruit_MQTT_Publish outHumidity_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/outHumidity", 0);
-Adafruit_MQTT_Publish UV_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/UV", 0);
-Adafruit_MQTT_Publish Vsolar_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/Vsolar", 0);
-Adafruit_MQTT_Publish Isolar_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/Isolar", 0);
-Adafruit_MQTT_Publish Vbat_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/Vbat", 0);
+Adafruit_MQTT_Publish rain_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/rain", 1);
+Adafruit_MQTT_Publish outTemp_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/outTemp", 1);
+Adafruit_MQTT_Publish outHumidity_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/outHumidity", 1);
+Adafruit_MQTT_Publish UV_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/UV", 1);
+Adafruit_MQTT_Publish Vsolar_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/Vsolar", 1);
+Adafruit_MQTT_Publish Isolar_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/Isolar", 1);
+Adafruit_MQTT_Publish Vbat_pub = Adafruit_MQTT_Publish(&mqtt, "weewx/Vbat", 1);
 
 
 
@@ -65,8 +65,8 @@ union {
 
 float UVindex = -1;
 
-const int sleep_duration = 300;  // deep sleep duration in seconds
-const uint8_t invalid_temp_counter_init = 5; // should be 15min / sleep duration : used to disable Temp measurement after heater use.  Temp will be disable n * sleep duration, 15 min is recommanded
+const int sleep_duration = 140;  // deep sleep duration in seconds
+const uint8_t invalid_temp_counter_init = 7; // should be 15min / sleep duration : used to disable Temp measurement after heater use.  Temp will be disable n * sleep duration, 15 min is recommanded
 uint8_t invalid_temp_counter;
 
 // uint8_t rtc_mode;
@@ -97,8 +97,8 @@ void setup() {
 
   if (! uv.begin()) {
     //Serial.println("Didn't find Si1145");
-  } 
-  
+  }
+
   else {
     delay(5);
     UVindex = uv.readUV();
@@ -127,7 +127,7 @@ void setup() {
   //Serial.print("Vsolar="); Serial.print(solar_voltage); Serial.println("V");
   //Serial.print("Isolar="); Serial.print(solar_current); Serial.println("mA");
   //Serial.print("Vbat="); Serial.print(battery_voltage); Serial.println("V");
-  
+
 
 
   // read last temp stored in SRAM
@@ -182,20 +182,45 @@ void setup() {
 
   setup_wifi();
   setup_mqtt();
+  delay(10);
 
-  if (rain > 0 )                                          { rain_pub.publish(rain); }
-  if ( humi >= 0 && humi <= 100 )                          { outHumidity_pub.publish(humi); }
-  if ((temp > -40) && (temp < 80))                         { outTemp_pub.publish(temp); }
-  if ((UVindex > 0) && (UVindex < 25))                    { UV_pub.publish(UVindex); }
-  if ((solar_voltage >= 0) && (solar_voltage < 20.0))      { Vsolar_pub.publish(solar_voltage); }
-  if ((solar_current >= 0) && (solar_current < 1000.0))    { Isolar_pub.publish(solar_current); }
-  if ((battery_voltage >= 0) && (battery_voltage < 20.0) ) { Vbat_pub.publish(battery_voltage); }
-  
-
-
-
-
-  
+  if (rain > 0 ) {
+    rain_pub.publish(rain);
+    delay(5);
+  }
+  if ( humi >= 0 && humi <= 100 ) {
+    outHumidity_pub.publish(humi);
+    setup_wifi();
+    setup_mqtt();
+    delay(10);
+  }
+  if ((temp > -40) && (temp < 80)) {
+    outTemp_pub.publish(temp);
+    setup_wifi();
+    setup_mqtt();
+    delay(10);
+  }
+  if ((UVindex > 0,5) && (UVindex < 25)) {
+    UV_pub.publish(UVindex);
+    setup_wifi();
+    setup_mqtt();
+    delay(10);
+  }
+  if ((solar_voltage >= 0) && (solar_voltage < 20.0)) {
+    Vsolar_pub.publish(solar_voltage);
+    setup_wifi();
+    setup_mqtt();
+    delay(10);
+  }
+  if ((solar_current >= 0) && (solar_current < 1000.0)) {
+    Isolar_pub.publish(solar_current);
+    setup_wifi();
+    setup_mqtt();
+    delay(10);
+  }
+  if ((battery_voltage >= 0) && (battery_voltage < 20.0) ) {
+    Vbat_pub.publish(battery_voltage);
+  }
 
   mqtt.disconnect();
   delay(50);
@@ -203,13 +228,12 @@ void setup() {
   //Serial.println("Sleep");
   delay(50);
   ESP.deepSleep(sleep_duration * 1000000);
-
-
 }
 
 void loop() {
   // not used due to deepsleep
 }
+
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -224,6 +248,10 @@ void setup_wifi() {
   // config static IP
   //  WiFi.mode(WIFI_STA);
   //  WiFi.config(ip, gateway, subnet);
+  if (WiFi.status() == WL_CONNECTED) {
+    return;
+  }
+
   WiFi.begin(ssid, password);
 
   uint8_t timeout_wifi = 60;
