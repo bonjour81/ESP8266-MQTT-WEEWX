@@ -1,3 +1,9 @@
+# [This repo is not maintened anymore: the project is moved to a new repo here](https://github.com/bonjour81/station_meteo)
+
+
+
+
+
 # ESP8266-MQTT-WEEWX
 
 # [Check WIKI for more details !](https://github.com/bonjour81/ESP8266-MQTT-WEEWX/wiki)
